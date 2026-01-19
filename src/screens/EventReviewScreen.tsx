@@ -11,6 +11,8 @@ import {
   FlatList,
   Share,
   Platform,
+  NativeModules,
+  PermissionsAndroid,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFS from 'react-native-fs';
@@ -18,6 +20,8 @@ import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {RouteProp} from '@react-navigation/native';
 import {RootStackParamList, CalendarEvent, DeviceCalendar} from '../types';
 import {generateICS} from '../services/apiService';
+
+const {CalendarModule} = NativeModules;
 
 type EventReviewScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'EventReview'>;
@@ -39,22 +43,51 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
   const [editForm, setEditForm] = useState<CalendarEvent | null>(null);
   const [showCalendarPicker, setShowCalendarPicker] = useState(false);
   const [calendars, setCalendars] = useState<DeviceCalendar[]>([]);
-  const [selectedCalendar, setSelectedCalendar] = useState<DeviceCalendar | null>(
-    null,
-  );
+  const [selectedCalendar, setSelectedCalendar] =
+    useState<DeviceCalendar | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [isAddingToCalendar, setIsAddingToCalendar] = useState(false);
 
   useEffect(() => {
-    loadCalendars();
+    requestCalendarPermission();
     loadSelectedCalendar();
   }, []);
 
+  const requestCalendarPermission = async () => {
+    try {
+      const granted = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.READ_CALENDAR,
+        PermissionsAndroid.PERMISSIONS.WRITE_CALENDAR,
+      ]);
+
+      if (
+        granted['android.permission.READ_CALENDAR'] ===
+          PermissionsAndroid.RESULTS.GRANTED &&
+        granted['android.permission.WRITE_CALENDAR'] ===
+          PermissionsAndroid.RESULTS.GRANTED
+      ) {
+        loadCalendars();
+      } else {
+        Alert.alert(
+          'Permission Required',
+          'Calendar permission is needed to add events to your calendar.',
+        );
+      }
+    } catch (err) {
+      console.warn('Permission error:', err);
+    }
+  };
+
   const loadCalendars = async () => {
-    // TODO: Implement native calendar module to fetch device calendars
-    // For now, we'll use mock data until native module is set up
-    setCalendars([
-      {id: '1', name: 'Personal', accountName: 'Local', accountType: 'local'},
-    ]);
+    try {
+      if (CalendarModule) {
+        const deviceCalendars = await CalendarModule.getCalendars();
+        setCalendars(deviceCalendars);
+      }
+    } catch (error) {
+      console.error('Error loading calendars:', error);
+      Alert.alert('Error', 'Could not load device calendars.');
+    }
   };
 
   const loadSelectedCalendar = async () => {
@@ -133,14 +166,32 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
   const exportICS = async () => {
     const selectedEvents = events.filter(e => e.approved);
     if (selectedEvents.length === 0) {
-      Alert.alert('No Events Selected', 'Please select at least one event to export.');
+      Alert.alert(
+        'No Events Selected',
+        'Please select at least one event to export.',
+      );
       return;
     }
 
     setIsExporting(true);
     try {
       const response = await generateICS(selectedEvents);
-      const icsContent = await response.text();
+
+      // Handle blob response
+      let icsContent: string;
+      if (response instanceof Blob) {
+        icsContent = await response.text();
+      } else if (typeof response === 'string') {
+        icsContent = response;
+      } else {
+        // Try to read as arraybuffer and convert
+        const reader = new FileReader();
+        icsContent = await new Promise((resolve, reject) => {
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsText(response as Blob);
+        });
+      }
 
       // Save to cache directory
       const filePath = `${RNFS.CachesDirectoryPath}/calendar-events.ics`;
@@ -150,15 +201,19 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
       await Share.share({
         url: Platform.OS === 'ios' ? filePath : `file://${filePath}`,
         title: 'Calendar Events',
+        message: 'Calendar events exported from Calendar Snap',
       });
 
-      // Clean up
+      // Clean up after 60 seconds
       setTimeout(() => {
         RNFS.unlink(filePath).catch(() => {});
       }, 60000);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error exporting ICS:', error);
-      Alert.alert('Export Error', 'Failed to export calendar file.');
+      Alert.alert(
+        'Export Error',
+        `Failed to export calendar file: ${error.message || 'Unknown error'}`,
+      );
     } finally {
       setIsExporting(false);
     }
@@ -167,16 +222,68 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
   const addToCalendar = async () => {
     const selectedEvents = events.filter(e => e.approved);
     if (selectedEvents.length === 0) {
-      Alert.alert('No Events Selected', 'Please select at least one event to add.');
+      Alert.alert(
+        'No Events Selected',
+        'Please select at least one event to add.',
+      );
       return;
     }
 
-    // TODO: Implement native calendar integration
-    // For now, show a message
-    Alert.alert(
-      'Coming Soon',
-      `${selectedEvents.length} event(s) would be added to your calendar. Native calendar integration coming soon!`,
-    );
+    if (!selectedCalendar) {
+      // Show calendar picker if no calendar selected
+      if (calendars.length === 0) {
+        Alert.alert(
+          'No Calendars Found',
+          'Please make sure you have a calendar set up on your device.',
+        );
+        return;
+      }
+      setShowCalendarPicker(true);
+      return;
+    }
+
+    setIsAddingToCalendar(true);
+    try {
+      // Convert events to format expected by native module
+      const eventsToAdd = selectedEvents.map(e => ({
+        title: e.title,
+        startDate: e.startDate,
+        startTime: e.startTime || '00:00',
+        endTime: e.endTime || e.startTime || '00:00',
+        location: e.location || '',
+        description: e.description || '',
+      }));
+
+      const result = await CalendarModule.addEvents(
+        selectedCalendar.id,
+        eventsToAdd,
+      );
+
+      if (result.success > 0) {
+        Alert.alert(
+          'Success',
+          `Added ${result.success} event${result.success !== 1 ? 's' : ''} to ${selectedCalendar.name}${result.failed > 0 ? `\n(${result.failed} failed)` : ''}`,
+          [{text: 'OK', onPress: () => navigation.popToTop()}],
+        );
+      } else {
+        Alert.alert('Error', 'Failed to add events to calendar.');
+      }
+    } catch (error: any) {
+      console.error('Error adding to calendar:', error);
+      Alert.alert(
+        'Error',
+        `Failed to add events: ${error.message || 'Unknown error'}`,
+      );
+    } finally {
+      setIsAddingToCalendar(false);
+    }
+  };
+
+  const handleCalendarSelect = async (calendar: DeviceCalendar) => {
+    await saveSelectedCalendar(calendar);
+    setShowCalendarPicker(false);
+    // Trigger add to calendar after selection
+    setTimeout(() => addToCalendar(), 100);
   };
 
   const renderEventCard = (event: CalendarEvent) => {
@@ -189,6 +296,7 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
             value={editForm.title}
             onChangeText={text => setEditForm({...editForm, title: text})}
             placeholder="Event Title"
+            placeholderTextColor="#999"
           />
           <View style={styles.editRow}>
             <TextInput
@@ -196,6 +304,7 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
               value={editForm.startDate}
               onChangeText={text => setEditForm({...editForm, startDate: text})}
               placeholder="YYYY-MM-DD"
+              placeholderTextColor="#999"
             />
           </View>
           <View style={styles.editRow}>
@@ -204,12 +313,14 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
               value={editForm.startTime || ''}
               onChangeText={text => setEditForm({...editForm, startTime: text})}
               placeholder="Start HH:MM"
+              placeholderTextColor="#999"
             />
             <TextInput
               style={[styles.editInput, styles.halfInput]}
               value={editForm.endTime || ''}
               onChangeText={text => setEditForm({...editForm, endTime: text})}
               placeholder="End HH:MM"
+              placeholderTextColor="#999"
             />
           </View>
           <TextInput
@@ -217,12 +328,16 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
             value={editForm.location || ''}
             onChangeText={text => setEditForm({...editForm, location: text})}
             placeholder="Location"
+            placeholderTextColor="#999"
           />
           <TextInput
             style={[styles.editInput, styles.multilineInput]}
             value={editForm.description || ''}
-            onChangeText={text => setEditForm({...editForm, description: text})}
+            onChangeText={text =>
+              setEditForm({...editForm, description: text})
+            }
             placeholder="Description"
+            placeholderTextColor="#999"
             multiline
           />
           <View style={styles.editActions}>
@@ -298,6 +413,18 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
         </TouchableOpacity>
       </View>
 
+      {/* Selected Calendar Indicator */}
+      {selectedCalendar && (
+        <TouchableOpacity
+          style={styles.calendarIndicator}
+          onPress={() => setShowCalendarPicker(true)}>
+          <Text style={styles.calendarIndicatorText}>
+            📅 {selectedCalendar.name}
+          </Text>
+          <Text style={styles.calendarIndicatorChange}>Change</Text>
+        </TouchableOpacity>
+      )}
+
       {/* Event List */}
       <ScrollView style={styles.eventList} showsVerticalScrollIndicator={false}>
         {events.map(renderEventCard)}
@@ -317,7 +444,11 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
       {/* Export Actions */}
       <View style={styles.exportActions}>
         <TouchableOpacity
-          style={[styles.exportButton, styles.icsButton]}
+          style={[
+            styles.exportButton,
+            styles.icsButton,
+            (isExporting || selectedCount === 0) && styles.disabledButton,
+          ]}
           onPress={exportICS}
           disabled={isExporting || selectedCount === 0}>
           <Text style={styles.exportButtonText}>
@@ -325,11 +456,15 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.exportButton, styles.calendarButton]}
+          style={[
+            styles.exportButton,
+            styles.calendarButton,
+            (isAddingToCalendar || selectedCount === 0) && styles.disabledButton,
+          ]}
           onPress={addToCalendar}
-          disabled={selectedCount === 0}>
+          disabled={isAddingToCalendar || selectedCount === 0}>
           <Text style={styles.exportButtonText}>
-            Add to Calendar ({selectedCount})
+            {isAddingToCalendar ? 'Adding...' : `Add to Calendar (${selectedCount})`}
           </Text>
         </TouchableOpacity>
       </View>
@@ -343,21 +478,29 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Select Calendar</Text>
-            <FlatList
-              data={calendars}
-              keyExtractor={item => item.id}
-              renderItem={({item}) => (
-                <TouchableOpacity
-                  style={styles.calendarItem}
-                  onPress={() => {
-                    saveSelectedCalendar(item);
-                    setShowCalendarPicker(false);
-                  }}>
-                  <Text style={styles.calendarName}>{item.name}</Text>
-                  <Text style={styles.calendarAccount}>{item.accountName}</Text>
-                </TouchableOpacity>
-              )}
-            />
+            {calendars.length === 0 ? (
+              <Text style={styles.noCalendarsText}>
+                No writable calendars found. Please make sure you have calendar
+                permissions enabled.
+              </Text>
+            ) : (
+              <FlatList
+                data={calendars}
+                keyExtractor={item => item.id}
+                renderItem={({item}) => (
+                  <TouchableOpacity
+                    style={[
+                      styles.calendarItem,
+                      selectedCalendar?.id === item.id &&
+                        styles.calendarItemSelected,
+                    ]}
+                    onPress={() => handleCalendarSelect(item)}>
+                    <Text style={styles.calendarName}>{item.name}</Text>
+                    <Text style={styles.calendarAccount}>{item.accountName}</Text>
+                  </TouchableOpacity>
+                )}
+              />
+            )}
             <TouchableOpacity
               style={styles.modalClose}
               onPress={() => setShowCalendarPicker(false)}>
@@ -395,6 +538,23 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
     color: '#1A1A1A',
+  },
+  calendarIndicator: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#E8F4FD',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  calendarIndicatorText: {
+    fontSize: 14,
+    color: '#1A1A1A',
+  },
+  calendarIndicatorChange: {
+    fontSize: 14,
+    color: '#4A90D9',
+    fontWeight: '600',
   },
   eventList: {
     flex: 1,
@@ -544,6 +704,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#4A90D9',
     marginLeft: 8,
   },
+  disabledButton: {
+    opacity: 0.5,
+  },
   exportButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
@@ -570,10 +733,20 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 16,
   },
+  noCalendarsText: {
+    textAlign: 'center',
+    color: '#666666',
+    padding: 20,
+  },
   calendarItem: {
     paddingVertical: 14,
+    paddingHorizontal: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#F0F0F0',
+    borderRadius: 8,
+  },
+  calendarItemSelected: {
+    backgroundColor: '#E8F4FD',
   },
   calendarName: {
     fontSize: 16,
