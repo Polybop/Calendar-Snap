@@ -125,14 +125,29 @@ const CameraScreen: React.FC<CameraScreenProps> = ({navigation}) => {
       clearInterval(stageTimer);
       console.error('Error processing photo:', error);
 
-      let errorMessage = 'Failed to process the image. Please try again.';
-      if (error.message?.includes('timeout')) {
-        errorMessage = 'Request timed out. Please try again with a clearer image.';
+      // Extract detailed error info for debugging
+      let errorMessage = 'Failed to process the image.';
+      let errorDetails = '';
+
+      if (error.response) {
+        // Server responded with error status
+        errorDetails = `Server error ${error.response.status}: ${JSON.stringify(error.response.data)}`;
+        errorMessage = `Server error (${error.response.status})`;
+      } else if (error.request) {
+        // Request made but no response
+        errorDetails = 'No response from server - check if server is running';
+        errorMessage = 'Could not reach server';
+      } else if (error.message?.includes('timeout')) {
+        errorMessage = 'Request timed out';
+        errorDetails = 'Server took too long to respond';
       } else if (error.message?.includes('Network')) {
-        errorMessage = 'Network error. Please check your connection.';
+        errorMessage = 'Network error';
+        errorDetails = error.message;
+      } else {
+        errorDetails = error.message || 'Unknown error';
       }
 
-      Alert.alert('Processing Error', errorMessage, [
+      Alert.alert('Processing Error', `${errorMessage}\n\nDetails: ${errorDetails}`, [
         {text: 'Try Again', onPress: () => setCapturedPhoto(null)},
         {text: 'Go Back', onPress: () => navigation.goBack()},
       ]);
