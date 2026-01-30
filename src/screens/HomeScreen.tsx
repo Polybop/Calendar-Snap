@@ -117,10 +117,10 @@ const HomeScreen: React.FC<HomeScreenProps> = ({navigation}) => {
         <View style={[styles.heroCard, {backgroundColor: theme.card}]}>
           <Text style={styles.heroIcon}>📸</Text>
           <Text style={[styles.heroTitle, {color: theme.text}]}>
-            Snap Any Calendar
+            Snap Any Schedule or Event
           </Text>
           <Text style={[styles.heroSubtitle, {color: theme.subtext}]}>
-            Take a photo of any schedule and AI will extract the events
+            Take a photo of anything with dates and AI will extract the events
             automatically
           </Text>
         </View>
@@ -131,7 +131,7 @@ const HomeScreen: React.FC<HomeScreenProps> = ({navigation}) => {
           onPress={() => navigation.navigate('Camera')}
           activeOpacity={0.8}>
           <Text style={styles.scanButtonIcon}>📷</Text>
-          <Text style={styles.scanButtonText}>Scan Calendar</Text>
+          <Text style={styles.scanButtonText}>Snap a Photo</Text>
         </TouchableOpacity>
 
         {/* Use Case Ideas */}

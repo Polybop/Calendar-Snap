@@ -219,7 +219,7 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
     }
   };
 
-  const addToCalendar = async () => {
+  const addToCalendar = async (calendar?: DeviceCalendar) => {
     const selectedEvents = events.filter(e => e.approved);
     if (selectedEvents.length === 0) {
       Alert.alert(
@@ -229,8 +229,8 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
       return;
     }
 
-    if (!selectedCalendar) {
-      // Show calendar picker if no calendar selected
+    // Always show calendar picker if no calendar passed
+    if (!calendar) {
       if (calendars.length === 0) {
         Alert.alert(
           'No Calendars Found',
@@ -255,14 +255,17 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
       }));
 
       const result = await CalendarModule.addEvents(
-        selectedCalendar.id,
+        calendar.id,
         eventsToAdd,
       );
 
       if (result.success > 0) {
+        const eventSummary = eventsToAdd.slice(0, 3).map(e =>
+          `• ${e.title} (${e.startDate})`
+        ).join('\n');
         Alert.alert(
           'Success',
-          `Added ${result.success} event${result.success !== 1 ? 's' : ''} to ${selectedCalendar.name}${result.failed > 0 ? `\n(${result.failed} failed)` : ''}`,
+          `Added ${result.success} event${result.success !== 1 ? 's' : ''} to "${calendar.name}"\n\n${eventSummary}${eventsToAdd.length > 3 ? '\n...' : ''}${result.failed > 0 ? `\n\n(${result.failed} failed)` : ''}`,
           [{text: 'OK', onPress: () => navigation.popToTop()}],
         );
       } else {
@@ -282,8 +285,8 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
   const handleCalendarSelect = async (calendar: DeviceCalendar) => {
     await saveSelectedCalendar(calendar);
     setShowCalendarPicker(false);
-    // Trigger add to calendar after selection
-    setTimeout(() => addToCalendar(), 100);
+    // Pass the calendar directly to avoid state timing issues
+    addToCalendar(calendar);
   };
 
   const renderEventCard = (event: CalendarEvent) => {
@@ -461,7 +464,7 @@ const EventReviewScreen: React.FC<EventReviewScreenProps> = ({
             styles.calendarButton,
             (isAddingToCalendar || selectedCount === 0) && styles.disabledButton,
           ]}
-          onPress={addToCalendar}
+          onPress={() => addToCalendar(false)}
           disabled={isAddingToCalendar || selectedCount === 0}>
           <Text style={styles.exportButtonText}>
             {isAddingToCalendar ? 'Adding...' : `Add to Calendar (${selectedCount})`}
